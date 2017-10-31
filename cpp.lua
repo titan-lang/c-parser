@@ -162,7 +162,6 @@ function cpp.initial_processing(filename)
                     buf = nil
                 end
                 -- output the string and reset the state.
-                print(">", linenr, out)
                 table.insert(output, {linenr, out})
                 state = "any"
             end
