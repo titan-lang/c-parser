@@ -30,6 +30,7 @@ local states = {
         next = "squote",
     },
     slash = {
+        single_char = true,
         ["/"] = { add = " ", skip = true, next = "line_comment" },
         ["*"] = { add = " ", skip = true, next = "block_comment" },
         otherwise = { add = "/", next = "any" },
@@ -43,6 +44,7 @@ local states = {
         continue_line = true,
     },
     try_end_block_comment = {
+        single_char = true,
         skip = true,
         ["/"] = { skip = true, next = "any" },
         otherwise = { next = "block_comment" },
@@ -105,7 +107,17 @@ function cpp.initial_processing(filename)
                 end
 
                 -- Look for next character matching a state transition
-                local n = st.pattern and line:find(st.pattern, i)
+                local n = nil
+                if st.pattern then
+                    if st.single_char then
+                        n = line:sub(i,i):find(st.pattern)
+                        if n then
+                             n = i
+                        end
+                    else
+                        n = line:find(st.pattern, i)
+                    end
+                end
 
                 -- If none,
                 if not n then
@@ -139,10 +151,12 @@ function cpp.initial_processing(filename)
                 end
                 i = n + 1
                 local ch = line:sub(n, n)
+
                 -- output the transition character if we should
                 if not st[ch].skip then
                     table.insert(buf, ch)
                 end
+
                 -- and move to the next state
                 state = st[ch].next
             end
