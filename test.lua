@@ -1,8 +1,8 @@
 local cpp = require("cpp")
 
-local lines, err = cpp.initial_processing(arg[1] or "/usr/include/stdio.h")
+local lines, err = cpp.parse_file(arg[1] or "/usr/include/stdio.h")
 if not lines then
-    io.stderr:write(err .. "\n")
+    io.stderr:write(tostring(err) .. "\n")
     os.exit(1)
 end
 

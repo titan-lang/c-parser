@@ -1,6 +1,11 @@
 
 local cpp = {}
 
+local c99 = require("c99")
+local inspect = require("inspect")
+
+-- TODO default defines: `gcc -dM -E - < /dev/null`
+
 -- Not supported:
 -- * character set conversion
 -- * trigraphs
@@ -165,6 +170,27 @@ function cpp.initial_processing(fd)
         end
     end
     return output
+end
+
+function cpp.tokenize(line)
+    local out = c99.preprocessing_grammar:match(line)
+    print(line)
+    print(inspect(out))
+end
+
+function cpp.parse_file(filename)
+    local fd, err = io.open(filename, "rb")
+    if not fd then
+        return nil, err
+    end
+    local linelist = cpp.initial_processing(fd)
+    local state = "any"
+    for _, lineitem in ipairs(linelist) do
+        local linenr = lineitem.nr
+        local line = lineitem.line
+
+        cpp.tokenize(line)
+    end
 end
 
 return cpp
