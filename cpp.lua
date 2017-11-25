@@ -9,45 +9,43 @@ local states = {
     any = {
         ['"'] = { next = "dquote" },
         ["'"] = { next = "squote" },
-        ["/"] = { skip = true, next = "slash" },
-        ["\\"] = { next = "backslash" },
-    },
-    backslash = {
-        next = "any",
+        ["/"] = { silent = true, next = "slash" },
     },
     dquote = {
         ['"'] = { next = "any" },
         ["\\"] = { next = "dquote_backslash" },
     },
     dquote_backslash = {
-        next = "dquote",
+        single_char = true,
+        default = { next = "dquote" },
     },
     squote = {
         ["'"] = { next = "any" },
         ["\\"] = { next = "squote_backslash" },
     },
     squote_backslash = {
-        next = "squote",
+        single_char = true,
+        default = { print = true, next = "squote" },
     },
     slash = {
         single_char = true,
-        ["/"] = { add = " ", skip = true, next = "line_comment" },
-        ["*"] = { add = " ", skip = true, next = "block_comment" },
-        otherwise = { add = "/", next = "any" },
+        ["/"] = { add = " ", silent = true, next = "line_comment" },
+        ["*"] = { add = " ", silent = true, next = "block_comment" },
+        default = { add = "/", next = "any" },
     },
     line_comment = {
-        skip = true,
+        silent = true,
     },
     block_comment = {
-        skip = true,
-        ["*"] = { skip = true, next = "try_end_block_comment" },
+        silent = true,
+        ["*"] = { silent = true, next = "try_end_block_comment" },
         continue_line = true,
     },
     try_end_block_comment = {
         single_char = true,
-        skip = true,
-        ["/"] = { skip = true, next = "any" },
-        otherwise = { next = "block_comment" },
+        silent = true,
+        ["/"] = { silent = true, next = "any" },
+        otherwise = { silent = true, next = "block_comment" },
         continue_line = true,
     },
 }
@@ -63,11 +61,15 @@ for _, rules in pairs(states) do
     rules.pattern = out ~= "[]" and out
 end
 
-function cpp.initial_processing(filename)
-    local fd, err = io.open(filename, "rb")
-    if not fd then
-        return nil, err
+local function add(buf, txt)
+    if not buf then
+        buf = {}
     end
+    table.insert(buf, txt)
+    return buf
+end
+
+function cpp.initial_processing(fd)
     local backslash_buf
     local buf
     local state = "any"
@@ -78,10 +80,7 @@ function cpp.initial_processing(filename)
         local len = #line
         if line:find("\\", len, true) then
             -- If backslash-terminated, buffer it
-            if not backslash_buf then
-                backslash_buf = {}
-            end
-            table.insert(backslash_buf, line:sub(1, len - 1))
+            backslash_buf = add(backslash_buf, line:sub(1, len - 1))
         else
             -- Merge backslash-terminated line
             if backslash_buf then
@@ -99,41 +98,29 @@ function cpp.initial_processing(filename)
                 -- Current state in the state machine
                 local st = states[state]
 
-                -- Some states just process one character
-                if st.next then
-                    state = st.next
-                    i = i + 1
-                    goto continue
-                end
-
                 -- Look for next character matching a state transition
                 local n = nil
                 if st.pattern then
                     if st.single_char then
-                        n = line:sub(i,i):find(st.pattern)
-                        if n then
-                             n = i
+                        if line:sub(i,i):find(st.pattern) then
+                            n = i
                         end
                     else
                         n = line:find(st.pattern, i)
                     end
                 end
 
-                -- If none,
-                if not n then
-                    -- Try a default transition
-                    if st.otherwise then
-                        state = st.otherwise.next
-                        -- Some transitions output the transition character
-                        if st.otherwise.add then
-                            if not buf then
-                                buf = {}
-                            end
-                            table.insert(buf, st.otherwise.add)
-                        end
-                        i = i + 1
-                        goto continue
-                    end
+                local transition, ch
+                if n then
+                    ch = line:sub(n, n)
+                    transition = st[ch]
+                else
+                    n = i
+                    ch = line:sub(n, n)
+                    transition = st.default
+                end
+
+                if not transition then
                     -- output the rest of the string if we should
                     if not st.skip then
                         out = i == 1 and line or line:sub(i)
@@ -141,33 +128,29 @@ function cpp.initial_processing(filename)
                     break
                 end
 
-                -- If we have a state transition,
-                if not buf then
-                    buf = {}
-                end
                 -- output everything up to the transition if we should
-                if n > i and not st.skip then
-                    table.insert(buf, line:sub(i, n - 1))
+                if n > i and not st.silent then
+                    buf = add(buf, line:sub(i, n - 1))
                 end
-                i = n + 1
-                local ch = line:sub(n, n)
 
-                -- output the transition character if we should
-                if not st[ch].skip then
-                    table.insert(buf, ch)
+                -- Some transitions output an explicit character
+                if transition.add then
+                    buf = add(buf, transition.add)
+                end
+
+                if not transition.silent then
+                    buf = add(buf, ch)
                 end
 
                 -- and move to the next state
-                state = st[ch].next
+                state = transition.next
+                i = n + 1
             end
 
             -- If we ended in a non-line-terminating state
             if states[state].continue_line then
-                if not buf then
-                    buf = {}
-                end
                 -- buffer the output and keep going
-                table.insert(buf, out)
+                buf = add(buf, out)
             else
                 -- otherwise, flush the buffer
                 if buf then
@@ -176,7 +159,7 @@ function cpp.initial_processing(filename)
                     buf = nil
                 end
                 -- output the string and reset the state.
-                table.insert(output, {linenr, out})
+                table.insert(output, { nr = linenr, line = out})
                 state = "any"
             end
         end
