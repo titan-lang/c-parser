@@ -98,7 +98,7 @@ hexQuad <- hexDigit^4
 --------------------------------------------------------------------------------
 -- String Literals
 
-stringLiteral <- ('"' / 'L"') sChar+ '"'
+stringLiteral <- { ('"' / 'L"') sChar+ '"' }
 
 sChar <- (!["\%nl] .) / escapeSequence
 
@@ -118,11 +118,6 @@ hexEscapeSequence <- "\x" hexDigit+
 
 --------------------------------------------------------------------------------
 -- Constants
-
-constant <- floatingConstant
-          / integerConstant
-          / characterConstant
-          / enumerationConstant
 
 integerConstant <- hexConstant integerSuffix?
                  / octalConstant integerSuffix?
@@ -165,27 +160,30 @@ binaryExponentPart <- [pP] digit+
 
 floatingSuffix <- [flFL]
 
-characterConstant <- ("'" / "L'") cChar+ "'"
+characterConstant <- { ("'" / "L'") cChar+ "'" }
 
 cChar <- (!['\%nl] .) / escapeSequence
 
 enumerationConstant <- identifier
 
+]]
+
+local common_expression_rules = [[--lpeg.re
+
 --------------------------------------------------------------------------------
 -- Common Expression Rules
 
-multiplicativeExpression <- {| castExpression           (_ {:op: [*/%]                     :} _ castExpression           )* |}
-additiveExpression       <- {| multiplicativeExpression (_ {:op: [-+]                      :} _ multiplicativeExpression )* |}
-shiftExpression          <- {| additiveExpression       (_ {:op: ("<<" / ">>")             :} _ additiveExpression       )* |}
-relationalExpression     <- {| shiftExpression          (_ {:op: ("<" / ">" / "<=" / ">=") :} _ shiftExpression          )* |}
-equalityExpression       <- {| relationalExpression     (_ {:op: ("==" / "!=")             :} _ relationalExpression     )* |}
-bandExpression           <- {| equalityExpression       (_ {:op: "&"                       :} _ equalityExpression       )* |}
-bxorExpression           <- {| bandExpression           (_ {:op: "^"                       :} _ bandExpression           )* |}
-borExpression            <- {| bxorExpression           (_ {:op: "|"                       :} _ bxorExpression           )* |}
-andExpression            <- {| borExpression            (_ {:op: "&&"                      :} _ borExpression            )* |}
-orExpression             <- {| andExpression            (_ {:op: "||"                      :} _ andExpression            )* |}
-
-conditionalExpression    <- orExpression (_ "?" _ expression ":" conditionalExpression)?
+multiplicativeExpression <- {| castExpression           (_ {:op: [*/%]                     :} _ castExpression                          )* |}
+additiveExpression       <- {| multiplicativeExpression (_ {:op: [-+]                      :} _ multiplicativeExpression                )* |}
+shiftExpression          <- {| additiveExpression       (_ {:op: ("<<" / ">>")             :} _ additiveExpression                      )* |}
+relationalExpression     <- {| shiftExpression          (_ {:op: (">=" / "<=" / "<" / ">") :} _ shiftExpression                         )* |}
+equalityExpression       <- {| relationalExpression     (_ {:op: ("==" / "!=")             :} _ relationalExpression                    )* |}
+bandExpression           <- {| equalityExpression       (_ {:op: "&"                       :} _ equalityExpression                      )* |}
+bxorExpression           <- {| bandExpression           (_ {:op: "^"                       :} _ bandExpression                          )* |}
+borExpression            <- {| bxorExpression           (_ {:op: "|"                       :} _ bxorExpression                          )* |}
+andExpression            <- {| borExpression            (_ {:op: "&&"                      :} _ borExpression                           )* |}
+orExpression             <- {| andExpression            (_ {:op: "||"                      :} _ andExpression                           )* |}
+conditionalExpression    <- {| orExpression             (_ {:op: "?"                       :} _ expression _ ":" _ conditionalExpression)? |}
 
 constantExpression <- conditionalExpression
 
@@ -339,6 +337,11 @@ jumpStatement <- "goto" _ identifier _ ";"
 -- Language Expression Rules
 -- (rules which differ from preprocessing stage)
 
+constant <- floatingConstant
+          / integerConstant
+          / characterConstant
+          / enumerationConstant
+
 primaryExpression <- identifier
                    / constant
                    / stringLiteral
@@ -397,14 +400,14 @@ preprocessingTokens <- {| (preprocessingToken _)+ |}
 
 S <- %s+
 
-directive <- {:directive: "if"      :} S {:exp: constantExpression :}
+directive <- {:directive: "if"      :} S {:exp: preprocessingTokens :}
            / {:directive: "ifdef"   :} S {:id: identifier :}
            / {:directive: "ifndef"  :} S {:id: identifier :}
-           / {:directive: "elif"    :} S {:exp: constantExpression :}
+           / {:directive: "elif"    :} S {:exp: preprocessingTokens :}
            / {:directive: "else"    :}
            / {:directive: "endif"   :}
-           / {:directive: "include" :} S {:exp: preprocessingTokens :}
-           / {:directive: "define"  :} S {:id: identifier :} "(" _ {:args: defineArgs :} _ ")" _ {:repl: replacementList :}
+           / {:directive: "include" :} S {:exp: headerName :}
+           / {:directive: "define"  :} S {:id: identifier :} "(" _ {:args: {| defineArgs |} :} _ ")" _ {:repl: replacementList :}
            / {:directive: "define"  :} S {:id: identifier :} _ {:repl: replacementList :}
            / {:directive: "undef"   :} S {:id: identifier :}
            / {:directive: "line"    :} S {:line: preprocessingTokens :}
@@ -416,31 +419,29 @@ defineArgs <- { "..." }
             / identifierList _ "," _ { "..." }
             / identifierList?
 
-replacementList <- preprocessingToken*
+replacementList <- {| (preprocessingToken _)* |}
 
-preprocessingToken <- headerName
-                    / identifier
+preprocessingToken <- identifier
                     / preprocessingNumber
                     / characterConstant
                     / stringLiteral
                     / punctuator
 
-headerName <- {| {:mode: "<" :} { (![%nl>] .)+ } ">" |}
-            / {| {:mode: '"' :} { (![%nl"] .)+ } '"' |}
+headerName <- {| {:mode: "<" -> "system" :} { (![%nl>] .)+ } ">" |}
+            / {| {:mode: '"' -> "quote" :} { (![%nl"] .)+ } '"' |}
 
-preprocessingNumber <- ("."? digit) ( digit
-                                    / identifierNondigit
-                                    / [eEpP] [-+]
-                                    / "."
-                                    )*
+preprocessingNumber <- { ("."? digit) ( digit
+                                      / identifierNondigit
+                                      / [eEpP] [-+]
+                                      / "."
+                                      )* }
 
-punctuator <-
-    digraphs / '...' / '<<=' / '>>=' /
-    '##' / '<<' / '>>' / '->' / '++' / '--' / '&&' / '||' / '<=' / '>=' /
-    '==' / '!=' / '*=' / '/=' / '%=' / '+=' / '-=' / '&=' / '^=' / '|=' /
-    '#' / '[' / ']' / '(' / ')' / '{' / '}' / '.' / '&' /
-    '*' / '+' / '-' / '~' / '!' / '/' / '%' / '<' / '>' /
-    '^' / '|' / '?' / ':' / ';' / ',' / '='
+punctuator <- { digraphs / '...' / '<<=' / '>>=' /
+                '##' / '<<' / '>>' / '->' / '++' / '--' / '&&' / '||' / '<=' / '>=' /
+                '==' / '!=' / '*=' / '/=' / '%=' / '+=' / '-=' / '&=' / '^=' / '|=' /
+                '#' / '[' / ']' / '(' / ')' / '{' / '}' / '.' / '&' /
+                '*' / '+' / '-' / '~' / '!' / '/' / '%' / '<' / '>' /
+                '^' / '|' / '?' / ':' / ';' / ',' / '=' }
 
 digraphs <- '%:%:' -> "##"
           / '%:' -> "#"
@@ -449,11 +450,20 @@ digraphs <- '%:%:' -> "##"
           / '<%' -> "{"
           / '%>' -> "}"
 
+]]
+
+local preprocessing_expression_rules = [[--lpeg.re
+
 --------------------------------------------------------------------------------
 -- Preprocessing Expression Rules
 -- (rules which differ from language processing stage)
 
 expression <- constantExpression
+
+constant <- { ( floatingConstant
+              / integerConstant
+              / characterConstant
+              ) }
 
 primaryExpression <- identifier
                    / constant
@@ -474,7 +484,18 @@ castExpression <- unaryExpression
 
 ]]
 
-c99.preprocessing_grammar = re.compile(preprocessing_rules .. common_rules, defs)
-c99.language_grammar = re.compile(language_rules .. common_rules, defs)
+c99.preprocessing_grammar = re.compile(
+    preprocessing_rules ..
+    common_rules, defs)
+
+c99.preprocessing_expression_grammar = re.compile(
+    preprocessing_expression_rules ..
+    common_rules ..
+    common_expression_rules, defs)
+
+c99.language_grammar = re.compile(
+    language_rules ..
+    common_rules ..
+    common_expression_rules, defs)
 
 return c99
