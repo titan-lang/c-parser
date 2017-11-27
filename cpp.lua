@@ -93,7 +93,7 @@ local states = {
         single_char = true,
         silent = true,
         ["/"] = { silent = true, next = "any" },
-        otherwise = { silent = true, next = "block_comment" },
+        default = { silent = true, next = "block_comment" },
         continue_line = "block_comment",
     },
 }
