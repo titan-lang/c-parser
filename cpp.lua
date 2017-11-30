@@ -261,7 +261,6 @@ end
 
 local function parse_expression(tokens)
     local text = table.concat(tokens, " ")
-print(text)
     local exp = c99.preprocessing_expression_grammar:match(text)
     exp = remove_wrapping_subtables(exp)
     return exp
@@ -296,7 +295,6 @@ local function eval_val(ctx, val)
 end
 
 eval_exp = function(ctx, exp)
-print("valexp", exp, exp.op, exp[1])
     if exp.op == "&&" then
         for _, e in ipairs(exp) do
             if not eval_exp(ctx, e) then
@@ -334,16 +332,30 @@ print("valexp", exp, exp.op, exp[1])
     end
 end
 
-local function consume_parentheses(tokens, start)
+local function consume_parentheses(tokens, start, linelist)
     local args = {}
     local i = start + 1
     local arg = {}
     local stack = 0
+    local cur = linelist.cur
     while true do
         local token = tokens[i]
         if token == nil then
-            error("TODO support multi-line function-like macro expansions")
-        elseif token == "(" then
+            repeat
+                cur = cur + 1
+                if not linelist[cur] then
+                    error("unterminated function-like macro")
+                end
+                local nextline = linelist[cur].tk
+                if singleton(nextline) then
+                    nextline = nextline[1]
+                end
+                linelist[cur].tk = {}
+                table.move(nextline, 1, #nextline, i, tokens)
+                token = tokens[i]
+            until token
+        end
+        if token == "(" then
             stack = stack + 1
             table.insert(arg, token)
         elseif token == ")" then
@@ -378,7 +390,73 @@ local function array_copy(t)
     return t2
 end
 
-local function macro_expand(ctx, tokens, expr_mode)
+local function table_remove(list, pos, n)
+    table.move(list, pos + n, #list + n, pos)
+end
+
+local function is_sequence(list)
+    local i = 0
+    for _,_ in ipairs(list) do
+        i = i + 1
+    end
+    local p = 0
+    for _,_ in pairs(list) do
+        p = p + 1
+    end
+    return i == p
+end
+
+local function table_replace_n_with(list, at, n, values)
+local old = #list
+print("TRNW?", inspect(list), "AT", at, "N", n, "VALUES", inspect(values))
+    assert(is_sequence(list))
+    local nvalues = #values
+    local nils = n >= nvalues and (n - nvalues + 1) or 0
+    if n ~= nvalues then
+        table.move(list, at + n, #list + nils, at + nvalues)
+    end
+print("....", inspect(list))
+    table.move(values, 1, nvalues, at, list)
+    assert(is_sequence(list))
+print("TRNW!", inspect(list))
+assert(#list == old - n + #values)
+end
+
+local function stringify(tokens)
+    return '"'..table.concat(tokens, " "):gsub("\"", "\\")..'"'
+end
+
+local macro_expand
+
+local function replace_args(ctx, tokens, args)
+    local i = 1
+    local hash_next = false
+    while true do
+        local token = tokens[i]
+        if not token then
+            break
+        end
+        if token == "#" then
+            hash_next = true
+            table.remove(tokens, i)
+        elseif args[token] then
+            macro_expand(ctx, args[token], nil, false) -- FIXME linelist == nil??
+            if hash_next then
+                tokens[i] = stringify(args[token])
+                hash_next = false
+            else
+                table_replace_n_with(tokens, i, 1, args[token])
+print(token, inspect(args[token]), inspect(tokens))
+                i = i + #args[token]
+            end
+        else
+            hash_next = false
+            i = i + 1
+        end
+    end
+end
+
+macro_expand = function(ctx, tokens, linelist, expr_mode)
     local i = 1
     while true do
         ::continue::
@@ -401,27 +479,29 @@ print(i, inspect(tokens))
 print(token, inspect(define))
             local repl = define.repl
             if define.args and tokens[i + 1] == "(" then
-                local args, j = consume_parentheses(tokens, i + 1)
+                local args, j = consume_parentheses(tokens, i + 1, linelist)
 print("args:", #args, inspect(args))
-                local saved_defines = {}
-                for i, arg in ipairs(define.args) do
-                    saved_defines[arg] = ctx.defines[arg]
-                    ctx.defines[arg] = args[i]
+                local named_args = {}
+                for i, arg in ipairs(args) do
+                    named_args[define.args[i]] = arg
                 end
                 local expansion = array_copy(repl)
-                macro_expand(ctx, expansion, expr_mode)
-                for arg, def in pairs(saved_defines) do
-                    ctx.defines[arg] = def
-                end
+                replace_args(ctx, expansion, named_args)
                 local nexpansion = #expansion
-                table.move(tokens, j, #tokens, i + nexpansion - 1)
-                table.move(expansion, 1, nexpansion, i, tokens)
+                if nexpansion == 0 then
+                    table_remove(tokens, i, (j - i + 1))
+                else
+                    table_replace_n_with(tokens, i, (j - i + 1), expansion)
+                end
             else
                 local ndefine = #define
-                if ndefine > 1 then
-                    table.move(tokens, i + 1, #tokens, i + ndefine)
+                if ndefine == 0 then
+                    table.remove(tokens, i)
+                elseif ndefine == 1 then
+                    tokens[i] = define[1]
+                else
+                    table_replace_n_with(tokens, i, 1, define)
                 end
-                table.move(define, 1, ndefine, i, tokens)
             end
         else
             i = i + 1
@@ -429,8 +509,8 @@ print("args:", #args, inspect(args))
     end
 end
 
-local function run_macro_expression(ctx, tks)
-    macro_expand(ctx, tks, true)
+local function run_expression(ctx, tks, linelist)
+    macro_expand(ctx, tks, linelist, true)
     local exp = parse_expression(tks)
 print(inspect(exp))
     return eval_exp(ctx, exp)
@@ -461,13 +541,19 @@ function cpp.parse_file(filename, fd, ctx)
         end
     end
     local linelist = cpp.initial_processing(fd)
-    local ifmode = ctx.ifmode
+
     for _, lineitem in ipairs(linelist) do
+        lineitem.tk = cpp.tokenize(lineitem.line)
+    end
+
+    local ifmode = ctx.ifmode
+    for i, lineitem in ipairs(linelist) do
         -- local linenr = lineitem.nr
         local line = lineitem.line
-        local tk = cpp.tokenize(line)
+        local tk = lineitem.tk
+        linelist.cur = i
 
-        print(ifmode[#ifmode], line)
+print(filename, ifmode[#ifmode], #ifmode, line)
 
         if #ifmode == 1 and (tk.directive == "elif" or tk.directive == "else" or tk.directive == "endif") then
             return nil, "unexpected directive " .. tk.directive
@@ -492,9 +578,9 @@ function cpp.parse_file(filename, fd, ctx)
             elseif tk.directive == "ifndef" then
                 table.insert(ifmode, (ctx.defines[tk.id] == nil))
             elseif tk.directive == "if" then
-                table.insert(ifmode, run_macro_expression(ctx, tk.exp))
+                table.insert(ifmode, run_expression(ctx, tk.exp, linelist))
             elseif tk.directive == "elif" then
-                ifmode[#ifmode] = run_macro_expression(ctx, tk.exp)
+                ifmode[#ifmode] = run_expression(ctx, tk.exp, linelist)
             elseif tk.directive == "else" then
                 ifmode[#ifmode] = not ifmode[#ifmode]
             elseif tk.directive == "endif" then
@@ -512,6 +598,7 @@ function cpp.parse_file(filename, fd, ctx)
                 if singleton(tk) and type(tk[1]) == "table" then
                     tokens = tk[1]
                 end
+                macro_expand(ctx, tokens, linelist, false)
                 table.insert(ctx.output, table.concat(tokens, " "))
             end
         elseif ifmode[#ifmode] == false then
@@ -522,7 +609,7 @@ function cpp.parse_file(filename, fd, ctx)
             elseif tk.directive == "else" then
                 ifmode[#ifmode] = not ifmode[#ifmode]
             elseif tk.directive == "elif" then
-                table.insert(ifmode, run_macro_expression(ctx, tk.exp))
+                ifmode[#ifmode] = run_expression(ctx, tk.exp)
             elseif tk.directive == "endif" then
                 table.remove(ifmode, #ifmode)
             end
