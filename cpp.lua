@@ -16,6 +16,7 @@ local function gcc_default_defines()
         defines = {},
         ifmode = { true },
         output = {},
+        current_dir = {},
     }
     local ctx = cpp.parse_file("-", pd, blank_ctx)
     return ctx.defines
@@ -237,8 +238,9 @@ end
 
 local function find_file(ctx, filename, mode)
     local paths = {}
+    local current_dir = ctx.current_dir[#ctx.current_dir]
     if mode == "quote" then
-        table.insert(paths, ctx.current_dir)
+        table.insert(paths, current_dir)
         for _, incdir in ipairs(ctx.incdirs.quote or {}) do
             table.insert(paths, incdir)
         end
@@ -441,8 +443,16 @@ function cpp.parse_file(filename, fd, ctx)
             defines = gcc_default_defines(),
             ifmode = { true },
             output = {},
+            current_dir = {}
         }
     end
+
+    local current_dir = filename:gsub("/[^/]*$", "")
+    if current_dir == filename then
+        current_dir = "."
+    end
+    table.insert(ctx.current_dir, current_dir)
+
     local err
     if not fd then
         fd, err = io.open(filename, "rb")
@@ -529,6 +539,9 @@ function cpp.parse_file(filename, fd, ctx)
             end
         end
     end
+
+    table.remove(ctx.current_dir)
+
     return ctx
 end
 
