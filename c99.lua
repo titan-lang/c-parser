@@ -71,12 +71,7 @@ apply(defs, keywords, -(lpeg.R'09' + lpeg.R('__','az','AZ')))
 
 local common_rules = [[--lpeg.re
 
-TRACE <- ({} -> trace)
-
---------------------------------------------------------------------------------
--- Whitespace
-
-_ <- %s*
+TRACE <- ({} => trace)
 
 --------------------------------------------------------------------------------
 -- Identifiers
@@ -198,17 +193,17 @@ local language_rules = [[--lpeg.re
 --------------------------------------------------------------------------------
 -- External Definitions
 
-translationUnit <- externalDeclaration+
+translationUnit <- %s* {| (externalDeclaration _)+ |} "<EOF>"
 
 externalDeclaration <- functionDefinition
                      / declaration
 
-functionDefinition <- (declarationSpecifier _)+ declarator _ (declaration _)* compoundStatement
+functionDefinition <- {| (declarationSpecifier _)+ {:function: declarator :} _ (declaration _)* compoundStatement |}
 
 --------------------------------------------------------------------------------
 -- Declarations
 
-declaration <- (declarationSpecifier _)+ initDeclarationList? _ ";"
+declaration <- {| {:type: ({ declarationSpecifier } _)+ :} {:ids: initDeclarationList? :} _ ";" |} => store_typedef
 
 declarationSpecifier <- storageClassSpecifier
                       / typeSpecifier
@@ -226,21 +221,21 @@ typeSpecifier <- "void" / "char" / "short" / "int" / "long"
                / "_Bool" / "Complex"
                / structOrUnionSpecifier
                / enumSpecifier
-               / typedefName
+               / typedefName => valid_typedef
 
 structOrUnionSpecifier <- structOrUnion (_ identifier)? _ "{" _ (structDeclaration _)+ "}"
                            / structOrUnion _ identifier
 
 structOrUnion <- "struct" / "union"
 
-structDeclaration <- specifierQualifierList _ structDeclaratorList _ ";"
+structDeclaration <- specifierQualifierList structDeclaratorList _ ";"
 
 specifierQualifierList <- ((typeSpecifier / typeQualifier) _)+
 
 structDeclaratorList <- structDeclarator (_ "," _ structDeclarator)*
 
 structDeclarator <- declarator
-                  / declarator? _ ":" _ constantExpression
+                  / (declarator _)? ":" _ constantExpression
 
 enumSpecifier <- "enum" (_ identifier)? _ "{" _ enumeratorList (_ ",")? _ "}"
                / "enum" _ identifier
@@ -253,29 +248,30 @@ typeQualifier <- "const" / "restrict" / "volatile"
 
 functionSpecifier <- "inline"
 
-declarator <- pointer? _ directDeclarator
+declarator <- (pointer _)? directDeclarator
 
-directDeclarator <- identifier _ ddRec
-                  / "(" _ declarator _ ")" _ ddRec
-ddRec <- "[" _ (typeQualifier _)* assignmentExpression? _ "]" _ ddRec
-       / "[" _ "static" _ (typeQualifier _)* assignmentExpression _ "]" _ ddRec
-       / "[" _ (typeQualifier _)+ "static" _ assignmentExpression _ "]" _ ddRec
-       / "[" _ (typeQualifier _)* "*" _ "]" _ ddRec
-       / "(" _ parameterTypeList _ ")" _ ddRec
-       / "(" _ identifierList? _ ")" _ ddRec
+directDeclarator <- identifier ddRec
+                  / "(" _ declarator _ ")" ddRec
+ddRec <- _ "[" _ (typeQualifier _)* (assignmentExpression _)? "]" ddRec
+       / _ "[" _ "static" _ (typeQualifier _)* assignmentExpression _ "]" ddRec
+       / _ "[" _ (typeQualifier _)+ "static" _ assignmentExpression _ "]" ddRec
+       / _ "[" _ (typeQualifier _)* "*" _ "]" ddRec
+       / _ "(" _ parameterTypeList _ ")" ddRec
+       / _ "(" _ (identifierList _)? ")" ddRec
+       / ""
 
-pointer <- ("*" _ (typeQualifier _)*)+
+pointer <- ("*" (_ typeQualifier)*) (_ "*" (_ typeQualifier)*)*
 
 parameterTypeList <- parameterList (_ "," _ "...")?
 
 parameterList <- parameterDeclaration (_ "," _ parameterDeclaration)*
 
-parameterDeclaration <- (declarationSpecifier _)+ (declarator / abstractDeclarator?)
+parameterDeclaration <- (declarationSpecifier _)+ (declarator / abstractDeclarator?) -- TODO
 
 typeName <- specifierQualifierList (_ abstractDeclarator)?
 
 abstractDeclarator <- pointer
-                    / pointer? _ directAbstractDeclarator
+                    / (pointer _)? directAbstractDeclarator
 
 directAbstractDeclarator <- ("(" _ abstractDeclarator _ ")" ) (_ directAbstractDeclarator2)*
                           / (_ directAbstractDeclarator2)+
@@ -347,15 +343,15 @@ primaryExpression <- identifier
                    / stringLiteral
                    / "(" _ expression _ ")"
 
-postfixExpression <- primaryExpression _ peRec
-                   / "(" _ typeName _ ")" _ "{" _ initializerList (_ ",")? _ "}" _ peRec
-peRec <- "[" _ expression _ "]" _ peRec
-       / "(" _ argumentExpressionList? _ ")" _ peRec
-       / "." _ identifier _ peRec
-       / "->" _ identifier _ peRec
-       / "++" _ peRec
-       / "--" _ peRec
-       / "" _
+postfixExpression <- primaryExpression peRec
+                   / "(" _ typeName _ ")" _ "{" _ initializerList (_ ",")? _ "}" peRec
+peRec <- _ "[" _ expression _ "]" _ peRec
+       / _ "(" _ argumentExpressionList? _ ")" _ peRec
+       / _ "." _ identifier _ peRec
+       / _ "->" _ identifier _ peRec
+       / _ "++" _ peRec
+       / _ "--" _ peRec
+       / ""
 
 argumentExpressionList <- assignmentExpression (_ "," _ assignmentExpression)*
 
@@ -378,15 +374,46 @@ assignmentOperator <- "=" / "*=" / "/=" / "%=" / "+=" / "-="
 
 expression <- assignmentExpression (_ "," _ assignmentExpression)*
 
+--------------------------------------------------------------------------------
+-- Language whitespace
+
+_ <- %s+
+S <- %s+
+
 ]]
 
 --==============================================================================
 -- Preprocessing Rules
 --==============================================================================
 
-defs["trace"] = function(...)
-    print("TRACE", ...)
-    return ...
+local util = require("titan-compiler.util")
+
+c99.tracing = false
+
+defs["trace"] = function(s, i)
+    if c99.tracing then
+        local line, col = util.get_line_number(s, i)
+        print("TRACE", line, col)
+    end
+    return true
+end
+
+local typedefs = {}
+
+defs["store_typedef"] = function(s, i, decl)
+    if decl.type == "typedef" then
+        if type(decl.ids) == "string" then
+            typedefs[decl.ids] = true
+        end
+    end
+    --print((require("inspect"))(decl))
+    return true
+end
+
+defs["valid_typedef"] = function(s, i, id)
+    return typedefs[id]
+    -- print("is " .. id .. " a typedef? no")
+    --return false
 end
 
 local preprocessing_rules = [[--lpeg.re
@@ -397,8 +424,6 @@ preprocessingLine <- _ ( "#" _ {| directive |} _
                        )
 
 preprocessingTokens <- {| (preprocessingToken _)+ |}
-
-S <- %s+
 
 directive <- {:directive: "if"      :} S {:exp: preprocessingTokens :}
            / {:directive: "ifdef"   :} S {:id: identifier :}
@@ -450,6 +475,12 @@ digraphs <- '%:%:' -> "##"
           / '<%' -> "{"
           / '%>' -> "}"
 
+--------------------------------------------------------------------------------
+-- Preprocessing whitespace
+
+_ <- %s*
+S <- %s+
+
 ]]
 
 local preprocessing_expression_rules = [[--lpeg.re
@@ -469,9 +500,9 @@ primaryExpression <- identifier
                    / constant
                    / {| "(" _ expression _ ")" |}
 
-postfixExpression <- primaryExpression _ peRec
-peRec <- "(" _ argumentExpressionList? _ ")" _ peRec
-       / "" _
+postfixExpression <- primaryExpression peRec
+peRec <- _ "(" _ argumentExpressionList? _ ")" peRec
+       / ""
 
 argumentExpressionList <- {| { expression } (_ "," _ { expression } )* |}
 
@@ -481,6 +512,12 @@ unaryExpression <- {| {:op: unaryOperator :} _ {:exp: unaryExpression :} |}
 unaryOperator <- [-+~!] / "defined"
 
 castExpression <- unaryExpression
+
+--------------------------------------------------------------------------------
+-- Preprocessing expression whitespace
+
+_ <- %s*
+S <- %s+
 
 ]]
 

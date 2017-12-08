@@ -6,6 +6,8 @@ local inspect = require("inspect")
 
 local SEP = package.config:sub(1,1)
 
+local function debug() end
+
 local function gcc_default_defines()
     local pd = io.popen("LANG=C gcc -dM -E - < /dev/null")
     if not pd then
@@ -74,7 +76,7 @@ local states = {
     },
     squote_backslash = {
         single_char = true,
-        default = { print = true, next = "squote" },
+        default = { next = "squote" },
     },
     slash = {
         single_char = true,
@@ -408,17 +410,17 @@ end
 
 local function table_replace_n_with(list, at, n, values)
 local old = #list
-print("TRNW?", inspect(list), "AT", at, "N", n, "VALUES", inspect(values))
+debug("TRNW?", inspect(list), "AT", at, "N", n, "VALUES", inspect(values))
     assert(is_sequence(list))
     local nvalues = #values
     local nils = n >= nvalues and (n - nvalues + 1) or 0
     if n ~= nvalues then
         table.move(list, at + n, #list + nils, at + nvalues)
     end
-print("....", inspect(list))
+debug("....", inspect(list))
     table.move(values, 1, nvalues, at, list)
     assert(is_sequence(list))
-print("TRNW!", inspect(list))
+debug("TRNW!", inspect(list))
 assert(#list == old - n + #values)
 end
 
@@ -431,6 +433,7 @@ local macro_expand
 local function replace_args(ctx, tokens, args)
     local i = 1
     local hash_next = false
+    local join_next = false
     while true do
         local token = tokens[i]
         if not token then
@@ -439,18 +442,30 @@ local function replace_args(ctx, tokens, args)
         if token == "#" then
             hash_next = true
             table.remove(tokens, i)
+        elseif token == "##" then
+            join_next = true
+            table.remove(tokens, i)
         elseif args[token] then
             macro_expand(ctx, args[token], nil, false) -- FIXME linelist == nil??
             if hash_next then
                 tokens[i] = stringify(args[token])
                 hash_next = false
+            elseif join_next then
+                tokens[i - 1] = tokens[i - 1] .. table.concat(args[token], " ")
+                table.remove(tokens, i)
+                join_next = false
             else
                 table_replace_n_with(tokens, i, 1, args[token])
-print(token, inspect(args[token]), inspect(tokens))
+debug(token, inspect(args[token]), inspect(tokens))
                 i = i + #args[token]
             end
+        elseif join_next then
+            tokens[i - 1] = tokens[i - 1] .. tokens[i]
+            table.remove(tokens, i)
+            join_next = false
         else
             hash_next = false
+            join_next = false
             i = i + 1
         end
     end
@@ -460,7 +475,7 @@ macro_expand = function(ctx, tokens, linelist, expr_mode)
     local i = 1
     while true do
         ::continue::
-print(i, inspect(tokens))
+debug(i, inspect(tokens))
         local token = tokens[i]
         if not token then
             break
@@ -476,11 +491,11 @@ print(i, inspect(tokens))
         end
         local define = ctx.defines[token]
         if define then
-print(token, inspect(define))
+debug(token, inspect(define))
             local repl = define.repl
             if define.args and tokens[i + 1] == "(" then
                 local args, j = consume_parentheses(tokens, i + 1, linelist)
-print("args:", #args, inspect(args))
+debug("args:", #args, inspect(args))
                 local named_args = {}
                 for i, arg in ipairs(args) do
                     named_args[define.args[i]] = arg
@@ -512,7 +527,7 @@ end
 local function run_expression(ctx, tks, linelist)
     macro_expand(ctx, tks, linelist, true)
     local exp = parse_expression(tks)
-print(inspect(exp))
+debug(inspect(exp))
     return eval_exp(ctx, exp)
 end
 
@@ -553,7 +568,7 @@ function cpp.parse_file(filename, fd, ctx)
         local tk = lineitem.tk
         linelist.cur = i
 
-print(filename, ifmode[#ifmode], #ifmode, line)
+debug(filename, ifmode[#ifmode], #ifmode, line)
 
         if #ifmode == 1 and (tk.directive == "elif" or tk.directive == "else" or tk.directive == "endif") then
             return nil, "unexpected directive " .. tk.directive
@@ -562,7 +577,7 @@ print(filename, ifmode[#ifmode], #ifmode, line)
         if ifmode[#ifmode] == true then
 
             if tk.directive then
-                print(inspect(tk))
+                debug(inspect(tk))
             end
 
             if tk.directive == "define" then
