@@ -6,7 +6,8 @@ local inspect = require("inspect")
 
 local SEP = package.config:sub(1,1)
 
-local function debug() end
+local function debug(...) print(...) end
+--local function debug() end
 
 local function gcc_default_defines()
     local pd = io.popen("LANG=C gcc -dM -E - < /dev/null")
@@ -21,6 +22,14 @@ local function gcc_default_defines()
         current_dir = {},
     }
     local ctx = cpp.parse_file("-", pd, blank_ctx)
+
+    ctx.defines["__builtin_va_list"] = { "char", "*" }
+    ctx.defines["__extension__"] = {}
+    ctx.defines["__attribute__"] = { args = { "arg" }, repl = {} }
+    ctx.defines["__restrict"] = { "restrict" }
+    ctx.defines["__inline__"] = { "inline" }
+    ctx.defines["__inline"] = { "inline" }
+
     return ctx.defines
 end
 
@@ -41,8 +50,7 @@ local function cpp_include_paths()
             mode = "system"
         elseif line:find([[End of search list]], 1, true) then
             mode = nil
-        end
-        if mode then
+        elseif mode then
             table.insert(res[mode], line:sub(2))
         end
     end
@@ -238,18 +246,28 @@ function cpp.tokenize(line)
     return c99.preprocessing_grammar:match(line)
 end
 
-local function find_file(ctx, filename, mode)
+local function find_file(ctx, filename, mode, is_next)
     local paths = {}
     local current_dir = ctx.current_dir[#ctx.current_dir]
-    if mode == "quote" then
-        table.insert(paths, current_dir)
+    if mode == "quote" or is_next then
+        if not is_next then
+            table.insert(paths, current_dir)
+        end
         for _, incdir in ipairs(ctx.incdirs.quote or {}) do
             table.insert(paths, incdir)
         end
-    elseif mode == "system" then
+    end
+    if mode == "system" or is_next then
         for _, incdir in ipairs(ctx.incdirs.system or {}) do
             table.insert(paths, incdir)
         end
+    end
+    if is_next then
+        while paths[1] and paths[1] ~= current_dir do
+            print(paths[1], "VERSUS", current_dir)
+            table.remove(paths, 1)
+        end
+        table.remove(paths, 1)
     end
     for _, path in ipairs(paths) do
         local pathname = path..SEP..filename
@@ -263,7 +281,10 @@ end
 
 local function parse_expression(tokens)
     local text = table.concat(tokens, " ")
-    local exp = c99.preprocessing_expression_grammar:match(text)
+    local exp, err, rest = c99.preprocessing_expression_grammar:match(text)
+    if not exp then
+        print("Error parsing expression: ", err, "[[" .. rest:sub(1, 20))
+    end
     exp = remove_wrapping_subtables(exp)
     return exp
 end
@@ -297,6 +318,7 @@ local function eval_val(ctx, val)
 end
 
 eval_exp = function(ctx, exp)
+debug(inspect(exp))
     if exp.op == "&&" then
         for _, e in ipairs(exp) do
             if not eval_exp(ctx, e) then
@@ -493,20 +515,24 @@ debug(i, inspect(tokens))
         if define then
 debug(token, inspect(define))
             local repl = define.repl
-            if define.args and tokens[i + 1] == "(" then
-                local args, j = consume_parentheses(tokens, i + 1, linelist)
+            if define.args then
+                if tokens[i + 1] == "(" then
+                    local args, j = consume_parentheses(tokens, i + 1, linelist)
 debug("args:", #args, inspect(args))
-                local named_args = {}
-                for i, arg in ipairs(args) do
-                    named_args[define.args[i]] = arg
-                end
-                local expansion = array_copy(repl)
-                replace_args(ctx, expansion, named_args)
-                local nexpansion = #expansion
-                if nexpansion == 0 then
-                    table_remove(tokens, i, (j - i + 1))
+                    local named_args = {}
+                    for i = 1, #define.args do
+                        named_args[define.args[i]] = args[i] or {}
+                    end
+                    local expansion = array_copy(repl)
+                    replace_args(ctx, expansion, named_args)
+                    local nexpansion = #expansion
+                    if nexpansion == 0 then
+                        table_remove(tokens, i, (j - i + 1))
+                    else
+                        table_replace_n_with(tokens, i, (j - i + 1), expansion)
+                    end
                 else
-                    table_replace_n_with(tokens, i, (j - i + 1), expansion)
+                    i = i + 1
                 end
             else
                 local ndefine = #define
@@ -600,10 +626,11 @@ debug(filename, ifmode[#ifmode], #ifmode, line)
                 ifmode[#ifmode] = not ifmode[#ifmode]
             elseif tk.directive == "endif" then
                 table.remove(ifmode, #ifmode)
-            elseif tk.directive == "include" then
+            elseif tk.directive == "include" or tk.directive == "include_next" then
                 local name = tk.exp[1]
                 local mode = tk.exp.mode
-                local inc_filename, inc_fd, err = find_file(ctx, name, mode)
+                local is_next = (tk.directive == "include_next")
+                local inc_filename, inc_fd, err = find_file(ctx, name, mode, is_next)
                 if not inc_filename then
                     return nil, name..":"..err
                 end
