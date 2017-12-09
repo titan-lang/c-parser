@@ -23,7 +23,10 @@ if not res then
     for i = math.max(line - 5, 1), math.min(line + 5, #ctx.output) do
         print(i, ctx.output[i])
     end
+    os.exit(1)
 end
+
+res = cpp.remove_wrapping_subtables(res)
 
 print("-----------------")
 print(inspect(res))

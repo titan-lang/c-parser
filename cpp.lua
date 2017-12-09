@@ -230,13 +230,13 @@ local function singleton(t)
     return t and type(t) == "table" and next(t) == 1 and next(t, 1) == nil
 end
 
-local function remove_wrapping_subtables(t)
+function cpp.remove_wrapping_subtables(t)
     while singleton(t) do
         t = t[1]
     end
     if type(t) == "table" then
         for k, v in pairs(t) do
-            t[k] = remove_wrapping_subtables(v)
+            t[k] = cpp.remove_wrapping_subtables(v)
         end
     end
     return t
@@ -285,7 +285,7 @@ local function parse_expression(tokens)
     if not exp then
         print("Error parsing expression: ", err, "[[" .. rest:sub(1, 20))
     end
-    exp = remove_wrapping_subtables(exp)
+    exp = cpp.remove_wrapping_subtables(exp)
     return exp
 end
 
@@ -553,7 +553,6 @@ end
 local function run_expression(ctx, tks, linelist)
     macro_expand(ctx, tks, linelist, true)
     local exp = parse_expression(tks)
-debug(inspect(exp))
     return eval_exp(ctx, exp)
 end
 

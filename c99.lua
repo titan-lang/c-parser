@@ -31,6 +31,59 @@ local re = require("relabel")
 
 local defs = {}
 
+local util = require("titan-compiler.util")
+
+c99.tracing = false
+
+defs["trace"] = function(s, i)
+    if c99.tracing then
+        local line, col = util.get_line_number(s, i)
+        print("TRACE", line, col, "[[" ..s:sub(i, i+ 256):gsub("\n.*", "") .. "]]")
+    end
+    return true
+end
+
+local typedefs = {}
+
+local function elem(xs, e)
+    for _, x in ipairs(xs) do
+        if e == x then
+            return true
+        end
+    end
+    return false
+end
+
+defs["store_typedef"] = function(s, i, decl)
+print((require("inspect"))(decl))
+    if elem(decl.spec, "typedef") then
+        local names = decl.ids[1].name
+        if names[1] then
+            for _, name in ipairs(names) do
+                if name ~= "*" then
+                    typedefs[name] = true
+                end
+            end
+        elseif names.declarator then
+            for _, name in ipairs(names.declarator) do
+                if name ~= "*" then
+                    typedefs[name] = true
+                end
+            end
+        end
+    end
+    return true, decl
+end
+
+defs["is_typedef"] = function(s, i, id)
+    print("is " .. id .. " a typedef? " .. tostring(not not typedefs[id]))
+    return typedefs[id], typedefs[id] and id
+end
+
+defs["empty_table"] = function()
+    return true, {}
+end
+
 --==============================================================================
 -- Lexical Rules (used in both preprocessing and language processing)
 --==============================================================================
@@ -38,6 +91,8 @@ local defs = {}
 local lexical_rules = [[--lpeg.re
 
 TRACE <- ({} => trace)
+
+EMPTY_TABLE <- ("" => empty_table)
 
 --------------------------------------------------------------------------------
 -- Identifiers
@@ -165,14 +220,21 @@ translationUnit <- %s* {| externalDeclaration+ |} "<EOF>"
 externalDeclaration <- functionDefinition
                      / declaration
 
-functionDefinition <- {| declarationSpecifier+ {:function: declarator :} declaration* compoundStatement |}
+functionDefinition <- {| {:spec: {| declarationSpecifier+ |} :} {:function: declarator :} {:decls: declaration* :} {:code: compoundStatement :} |}
 
 --------------------------------------------------------------------------------
 -- Declarations
 
-declaration <- {| {:type: declarationSpecifierList :} ({:ids: initDeclarationList :})? gccExtensionSpecifier* ";" _ |} => store_typedef
+declaration <- {| TRACE {:spec: {| declarationSpecifier+ |} :} TRACE ({:ids: initDeclarationList :})? gccExtensionSpecifier* ";" _ |} => store_typedef
 
-declarationSpecifierList <- declarationSpecifier+
+declarationSpecifier <- storageClassSpecifier
+                      / typeSpecifier
+                      / typeQualifier
+                      / functionSpecifier
+
+initDeclarationList <- {| initDeclarator ("," _ initDeclarator)* |}
+
+initDeclarator <- {| {:name: declarator :} ("=" _ {:value: initializer :} )? |}
 
 gccExtensionSpecifier <- "__attribute__" _ "(" _ "(" _ gccAttributeList ")" _ ")" _
                        / gccAsm
@@ -183,15 +245,6 @@ gccAttributeList <- gccAttributeItem ("," _ gccAttributeItem )*
 
 gccAttributeItem <- IDENTIFIER ("(" _ (expression ("," _ expression)*)? ")" _)?
                   / ""
-
-declarationSpecifier <- storageClassSpecifier
-                      / typeSpecifier
-                      / typeQualifier
-                      / functionSpecifier
-
-initDeclarationList <- initDeclarator ("," _ initDeclarator)*
-
-initDeclarator <- declarator ("=" _ initializer)?
 
 storageClassSpecifier <- { "typedef"  } _
                        / { "extern"   } _
@@ -214,13 +267,19 @@ typeSpecifier <- typedefName
                / structOrUnionSpecifier
                / enumSpecifier
 
-structOrUnionSpecifier <- structOrUnion IDENTIFIER? "{" _ structDeclaration+ "}" _
-                        / structOrUnion IDENTIFIER
+typeQualifier <- { "const"    } _
+               / { "restrict" } _
+               / { "volatile" } _
+
+functionSpecifier <- { "inline" } _
+
+structOrUnionSpecifier <- {| {:type: structOrUnion :} ({:id: IDENTIFIER :})? "{" _ {| structDeclaration+ |} "}" _ |}
+                        / {| {:type: structOrUnion :}  {:id: IDENTIFIER :}                                        |}
 
 structOrUnion <- { "struct" } _
                / { "union"  } _
 
-structDeclaration <- specifierQualifier+ structDeclaratorList ";" _
+structDeclaration <- {| {:type: specifierQualifier+ :} {:ids: structDeclaratorList :} |} ";" _
 
 specifierQualifier <- typeSpecifier
                     / typeQualifier
@@ -229,45 +288,34 @@ structDeclaratorList <- structDeclarator ("," _ structDeclarator)*
 
 structDeclarator <- declarator (":" _ constantExpression)?
 
-enumSpecifier <- "enum" _ IDENTIFIER? "{" _ enumeratorList ("," _)? "}" _
-               / "enum" _ IDENTIFIER
+enumSpecifier <- {| {:type: enum :} ({:id: IDENTIFIER :})? "{" _ {:values: {| enumeratorList |} :} ("," _)? "}" _ |}
+               / {| {:type: enum :}  {:id: IDENTIFIER :}                                                          |}
+
+enum <- { "enum" } _
 
 enumeratorList <- enumerator ("," _ enumerator)*
 
-enumerator <- enumerationConstant ("=" _ constantExpression)?
+enumerator <- {| {:id: enumerationConstant :} ("=" _ {:value: constantExpression :})? |}
 
-typeQualifier <- { "const"    } _
-               / { "restrict" } _
-               / { "volatile" } _
-               / gccTypeQualifier
-
-gccTypeQualifier <- { "__restrict" } _
-
-functionSpecifier <- "inline" _
-                   / gccFunctionSpecifier
-
-gccFunctionSpecifier <- "__inline" _
-                      / "__inline__" _
-
-declarator <- pointer? directDeclarator
+declarator <- {| pointer? directDeclarator |}
 
 directDeclarator <- IDENTIFIER ddRec
-                  / "(" _ declarator ")" _ ddRec
-ddRec <- "[" _ typeQualifier* assignmentExpression? "]" _ ddRec
-       / "[" _ "static" _ typeQualifier* assignmentExpression "]" _ ddRec
-       / "[" _ typeQualifier+ "static" _ assignmentExpression "]" _ ddRec
-       / "[" _ typeQualifier* "*" _ "]" _ ddRec
-       / "(" _ parameterTypeList ")" _ ddRec
-       / "(" _ identifierList? ")" _ ddRec
+                  / "(" _ {:declarator: declarator :} ")" _ ddRec
+ddRec <- "[" _ {:idx: typeQualifier* assignmentExpression?          :} "]" _ ddRec
+       / "[" _ {:idx: { "static" } _ typeQualifier* assignmentExpression :} "]" _ ddRec
+       / "[" _ {:idx: typeQualifier+ { "static" } _ assignmentExpression :} "]" _ ddRec
+       / "[" _ {:idx: typeQualifier* { "*" } _                           :} "]" _ ddRec
+       / "(" _ {:params: {| parameterTypeList |} :} ")" _ ddRec
+       / "(" _ {:params: {| identifierList?   |} :} ")" _ ddRec
        / ""
 
-pointer <- ("*" _ typeQualifier*)+
+pointer <- ({ "*" } _ typeQualifier*)+
 
-parameterTypeList <- parameterList ("," _ "..." _)?
+parameterTypeList <- parameterList ("," _ { "..." } _)?
 
 parameterList <- parameterDeclaration ("," _ parameterDeclaration)*
 
-parameterDeclaration <- declarationSpecifier+ (declarator / abstractDeclarator?)
+parameterDeclaration <- {| declarationSpecifier+ (declarator / abstractDeclarator?) |}
 
 typeName <- specifierQualifier+ abstractDeclarator?
 
@@ -280,7 +328,7 @@ directAbstractDeclarator2 <- "[" _ assignmentExpression? "]" _
                            / "[" _ "*" _ "]" _
                            / "(" _ parameterTypeList? ")" _
 
-typedefName <- IDENTIFIER => valid_typedef
+typedefName <- IDENTIFIER => is_typedef
 
 initializer <- assignmentExpression
              / "{" _ initializerList ("," _)? "}" _
@@ -344,23 +392,26 @@ primaryExpression <- IDENTIFIER
                    / STRING_LITERAL+
                    / "(" _ expression ")" _
 
-postfixExpression <- primaryExpression peRec
-                   / "(" _ typeName ")" _ "{" _ initializerList ("," _)? "}" _ peRec
-peRec <- "[" _ expression "]" _ peRec
-       / "(" _ argumentExpressionList? ")" _ peRec
-       / "." _ IDENTIFIER peRec
-       / "->" _ IDENTIFIER peRec
-       / "++" _ peRec
-       / "--" _ peRec
+postfixExpression <- {| primaryExpression peRec |}
+                   / {| "(" _ {:struct: typeName :} ")" _ "{" _ initializerList ("," _)? "}" _ peRec |}
+peRec <- {| "[" _ {:idx: expression :} "]" _ peRec |}
+       / {| "(" _ {:args: (argumentExpressionList / EMPTY_TABLE) :} ")" _ peRec |}
+       / {| "." _ {:dot: IDENTIFIER :} peRec |}
+       / {| "->" _ {:arrow: IDENTIFIER :} peRec |}
+       / { "++" } _ peRec
+       / { "--" } _ peRec
        / ""
 
 argumentExpressionList <- assignmentExpression ("," _ assignmentExpression)*
 
-unaryExpression <- ("++" _ / "--" _) unaryExpression
-                 / unaryOperator castExpression
-                 / "sizeof" _ "(" _ typeName ")" _
-                 / "sizeof" _ unaryExpression
+unaryExpression <- {| {:preop: prefixOp :} unaryExpression     |}
+                 / {| {:unop: unaryOperator :} castExpression  |}
+                 / {| {:op: "sizeof" :} _ "(" _ typeName ")" _ |}
+                 / {| {:op: "sizeof" :} _ unaryExpression      |}
                  / postfixExpression
+
+prefixOp <- { "++" } _
+          / { "--" } _
 
 unaryOperator <- [-+~!*&] _
 
@@ -395,35 +446,6 @@ S <- %s+
 --==============================================================================
 -- Preprocessing Rules
 --==============================================================================
-
-local util = require("titan-compiler.util")
-
-c99.tracing = false
-
-defs["trace"] = function(s, i)
-    if c99.tracing then
-        local line, col = util.get_line_number(s, i)
-        print("TRACE", line, col)
-    end
-    return true
-end
-
-local typedefs = {}
-
-defs["store_typedef"] = function(s, i, decl)
---print((require("inspect"))(decl))
-    if decl.type == "typedef" then
-        if type(decl.ids) == "string" then
-            typedefs[decl.ids] = true
-        end
-    end
-    return true
-end
-
-defs["valid_typedef"] = function(s, i, id)
-    print("is " .. id .. " a typedef? " .. tostring(not not typedefs[id]))
-    return typedefs[id]
-end
 
 local preprocessing_rules = [[--lpeg.re
 
